@@ -6,45 +6,43 @@ Client::Client(QWidget *parent)
     : QDialog(parent)
     , hostCombo(new QComboBox)
     , portLineEdit(new QLineEdit)
-    , getFortuneButton(new QPushButton(tr("Get Fortune")))
-    , sendMessageButton(new QPushButton(tr("Send Message")))
+    , connectButton(new QPushButton(tr("Connexion")))
+    , sendMessageButton(new QPushButton(tr("Envoyer le message")))
     , sendMessage(new QLineEdit)
-    , receivedMessage(new QLabel)
+    , messageDisplay(new QTextEdit)
     , tcpSocket(new QTcpSocket(this))
 {
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     in.setDevice(tcpSocket);
     in.setVersion(QDataStream::Qt_5_0);
 
-    // Configuration de l'interface utilisateur
+    // Interface utilisateur
     setupUi();
 
-    connect(tcpSocket, &QIODevice::readyRead, this, &Client::readFortune);
-    connect(tcpSocket, QOverload<QAbstractSocket::SocketError>::of
-            (&QAbstractSocket::error), this, &Client::displayError);
-    connect(getFortuneButton, &QPushButton::clicked, this, &Client::requestNewFortune);
+    connect(tcpSocket, &QIODevice::readyRead, this, &Client::readMessage);
+    connect(tcpSocket, &QTcpSocket::connected, this, &Client::onConnected);
+    connect(tcpSocket, QOverload<QAbstractSocket::SocketError>::of(&QAbstractSocket::error), this, &Client::displayError);
+    connect(connectButton, &QPushButton::clicked, this, &Client::requestConnection);
     connect(sendMessageButton, &QPushButton::clicked, this, &Client::sendMessageToServer);
 
-    setWindowTitle(tr("Fortune Client"));
+    setWindowTitle(tr("Client Chat"));
     portLineEdit->setValidator(new QIntValidator(1, 65535, this));
-    getFortuneButton->setDefault(true);
-    getFortuneButton->setEnabled(false);
+    connectButton->setDefault(true);
+    connectButton->setEnabled(false);
 
     QStringList hosts;
-    hosts << "localhost";
+    hosts << "localhost" << "192.168.0.143";
     hostCombo->addItems(hosts);
-    QStringList hosts2;
-    hosts << "172.16.13.11";
-    hostCombo->addItems(hosts);
+    hostCombo->setEditable(true);
 
-
-    connect(portLineEdit, &QLineEdit::textChanged, this, &Client::enableGetFortuneButton);
+    connect(portLineEdit, &QLineEdit::textChanged, this, &Client::enableConnectButton);
+    connect(hostCombo, &QComboBox::editTextChanged, this, &Client::enableConnectButton);
 }
 
 void Client::setupUi() {
     auto mainLayout = new QVBoxLayout(this);
 
-    auto hostLabel = new QLabel(tr("&Server name:"));
+    auto hostLabel = new QLabel(tr("&Nom du serveur:"));
     hostLabel->setBuddy(hostCombo);
     auto portLabel = new QLabel(tr("&Port:"));
     portLabel->setBuddy(portLineEdit);
@@ -54,18 +52,22 @@ void Client::setupUi() {
     formLayout->addRow(portLabel, portLineEdit);
 
     mainLayout->addLayout(formLayout);
-    mainLayout->addWidget(new QLabel(tr("Received Messages:")));
-    mainLayout->addWidget(receivedMessage);
-    mainLayout->addWidget(new QLabel(tr("Send Message:")));
+    mainLayout->addWidget(new QLabel(tr("Messages :")));
+    mainLayout->addWidget(messageDisplay);
+    mainLayout->addWidget(new QLabel(tr("Envoyer un message :")));
     mainLayout->addWidget(sendMessage);
     mainLayout->addWidget(sendMessageButton);
-    mainLayout->addWidget(getFortuneButton);
+    mainLayout->addWidget(connectButton);
 
+    messageDisplay->setReadOnly(true);
     setLayout(mainLayout);
+
+    // Augmenter la taille de la fenêtre
+    resize(600, 400);
 }
 
-void Client::requestNewFortune() {
-    getFortuneButton->setEnabled(false);
+void Client::requestConnection() {
+    connectButton->setEnabled(false);
     tcpSocket->abort();
     tcpSocket->connectToHost(hostCombo->currentText(), portLineEdit->text().toInt());
 }
@@ -75,47 +77,34 @@ void Client::displayError(QAbstractSocket::SocketError socketError) {
         case QAbstractSocket::RemoteHostClosedError:
             break;
         case QAbstractSocket::HostNotFoundError:
-            QMessageBox::information(this, tr("Fortune Client"),
-                                     tr("The host was not found. Please check the "
-                                        "host name and port settings."));
+            QMessageBox::information(this, tr("Client Chat"),
+                                     tr("Le serveur n'a pas été trouvé. Vérifiez le "
+                                        "nom du serveur et les paramètres du port."));
             break;
         case QAbstractSocket::ConnectionRefusedError:
-            QMessageBox::information(this, tr("Fortune Client"),
-                                     tr("The connection was refused by the peer. "
-                                        "Make sure the fortune server is running, "
-                                        "and check that the host name and port "
-                                        "settings are correct."));
+            QMessageBox::information(this, tr("Client Chat"),
+                                     tr("La connexion a été refusée par le serveur. "
+                                        "Assurez-vous que le serveur Fortune fonctionne, "
+                                        "et vérifiez que le nom du serveur et les paramètres "
+                                        "du port sont corrects."));
             break;
         default:
-            QMessageBox::information(this, tr("Fortune Client"),
-                                     tr("The following error occurred: %1.")
+            QMessageBox::information(this, tr("Client Chat"),
+                                     tr("L'erreur suivante s'est produite : %1.")
                                      .arg(tcpSocket->errorString()));
     }
-    getFortuneButton->setEnabled(true);
+    connectButton->setEnabled(true);
 }
 
-void Client::readFortune() {
+void Client::readMessage() {
     in.startTransaction();
-    QString nextFortune;
-    in >> nextFortune;
+    QString message;
+    in >> message;
     if (!in.commitTransaction())
         return;
-    if (nextFortune == currentFortune) {
-        QTimer::singleShot(0, this, &Client::requestNewFortune);
-        return;
-    }
-    currentFortune = nextFortune;
-    receivedMessage->setText(currentFortune);
-    getFortuneButton->setEnabled(true);
-}
 
-void Client::enableGetFortuneButton() {
-    getFortuneButton->setEnabled(!hostCombo->currentText().isEmpty() &&
-                                 !portLineEdit->text().isEmpty());
-}
-
-void Client::sessionOpened() {
-    enableGetFortuneButton();
+    // Afficher le message reçu du serveur
+    displayMessage("Serveur", message);
 }
 
 void Client::sendMessageToServer() {
@@ -123,10 +112,31 @@ void Client::sendMessageToServer() {
     if (message.isEmpty()) {
         return;
     }
+    qDebug() << "Message envoyé (Client) : " << message;
+    displayMessage("Vous", message);
     QByteArray block;
     QDataStream out(&block, QIODevice::WriteOnly);
     out.setVersion(QDataStream::Qt_5_0);
     out << message;
     tcpSocket->write(block);
     sendMessage->clear();
+}
+
+void Client::displayMessage(const QString &sender, const QString &message) {
+    QString timeStamp = QDateTime::currentDateTime().toString("dd/MM/yyyy | hh:mm:ss");
+    messageDisplay->append(QString("[%1] %2 : %3").arg(timeStamp, sender, message));
+}
+
+void Client::enableConnectButton() {
+    connectButton->setEnabled(!hostCombo->currentText().isEmpty() &&
+                              !portLineEdit->text().isEmpty());
+}
+
+void Client::sessionOpened() {
+    enableConnectButton();
+}
+
+void Client::onConnected() {
+    QString serverIp = tcpSocket->peerAddress().toString();
+    displayMessage("<LOGS>", tr("Connexion réussie sur le serveur (%1)").arg(serverIp));
 }
